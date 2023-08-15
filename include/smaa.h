@@ -333,6 +333,30 @@ public:
 	 */
 	void getAreaColorEdgeDetection(int *xmin, int *xmax, int *ymin, int *ymax);
 
+	//SpeedEngine: Normal ASTC Optimize:[ubpazhuang]:[BEGIN]
+	/**
+	 * Normal Edge Detection
+	 *
+	 * IMPORTANT NOTICE: normal edge detection requires normalized normals.
+	 */
+	void normalEdgeDetection(int x, int y,
+				ImageReader *normalImage,
+				ImageReader *predicationImage,
+				/* out */ float edges[4]);
+
+	/**
+	 * Determine possible depending area needed for rendering results of the
+	 * normal edge detection in specified rectangle, and modify the minimum and
+	 * maximum coordinates given by pointers.
+	 *
+	 * *xmin -= 2;
+	 * *xmax += 1;
+	 * *ymin -= 2;
+	 * *ymax += 1;
+	 */
+	void getAreaNormalEdgeDetection(int *xmin, int *xmax, int *ymin, int *ymax);
+	//SpeedEngine: Normal ASTC Optimize:[ubpazhuang]:[END]
+
 	/**
 	 * Depth Edge Detection
 	 */
@@ -389,6 +413,16 @@ public:
 				  ImageReader *blendImage,
 				  ImageReader *velocityImage,
 				  /* out */ float color[4]);
+
+	//SpeedEngine: Normal ASTC Optimize:[ubpazhuang]:[BEGIN]
+	/**
+	 * Neighborhood Blending Pixel Shader (Third Pass) for normal
+	 */
+	void neighborhoodBlending_normal(int x, int y,
+				  ImageReader *normalImage,
+				  ImageReader *blendImage,
+				  /* out */ float color[4]);
+	//SpeedEngine: Normal ASTC Optimize:[ubpazhuang]:[END]
 
 	/**
 	 * Determine possible depending area needed for rendering results of the

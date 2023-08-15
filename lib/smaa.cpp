@@ -51,6 +51,13 @@ static inline float lerp(float a, float b, float p)
 	return a + (b - a) * p;
 }
 
+//SpeedEngine: Normal ASTC Optimize:[ubpazhuang]:[BEGIN]
+static inline float blend(float a, float b, float wa, float wb)
+{
+	return wa * a + wb * b;
+}
+//SpeedEngine: Normal ASTC Optimize:[ubpazhuang]:[END]
+
 static inline float bilinear(float c00, float c10, float c01, float c11, float x, float y)
 {
 	return (c00 * (1.0f - x) + c10 * x) * (1.0f - y) + (c01 * (1.0f - x) + c11 * x) * y;
@@ -65,6 +72,32 @@ static inline float color_delta(const float color1[4], const float color2[4])
 {
 	return fmaxf(fmaxf(fabsf(color1[0] - color2[0]), fabsf(color1[1] - color2[1])), fabsf(color1[2] - color2[2]));
 }
+
+//SpeedEngine: Normal ASTC Optimize:[ubpazhuang]:[BEGIN]
+static inline void decode_normal(const float color[4], float normal[4])
+{
+	float x = 2.f * color[0] - 1.f;
+	float y = 2.f * color[1] - 1.f;
+	float z = std::sqrt(std::max(0.f, 1.f - x * x - y * y));
+	normal[0] = x;
+	normal[1] = y;
+	normal[2] = z;
+	normal[3] = 1.f;
+}
+
+static inline float normal_delta(const float color1[4], const float color2[4])
+{
+	float normal1[4];
+	float normal2[4];
+	decode_normal(color1, normal1);
+	decode_normal(color2, normal2);
+	float dx = normal1[0] - normal2[0];
+	float dy = normal1[1] - normal2[1];
+	float dz = normal1[2] - normal2[2];
+	float dn = std::sqrt(dx * dx + dy * dy + dz * dz);
+	return dn;
+}
+//SpeedEngine: Normal ASTC Optimize:[ubpazhuang]:[END]
 
 /*-----------------------------------------------------------------------------*/
 /* Internal Functions to Sample Pixel Color from Image with Bilinear Filtering */
@@ -121,6 +154,57 @@ static void sample_bilinear_horizontal(ImageReader *image, int x, int y, float x
 	output[2] = lerp(color00[2], color10[2], fx);
 	output[3] = lerp(color00[3], color10[3], fx);
 }
+
+//SpeedEngine: Normal ASTC Optimize:[ubpazhuang]:[BEGIN]
+static void blend_normal(float color0[4], float color1[4], float w0, float w1, float normal[4])
+{
+	float nx0 = 2.f * color0[0] - 1.f;
+	float nx1 = 2.f * color1[0] - 1.f;
+	float ny0 = 2.f * color0[1] - 1.f;
+	float ny1 = 2.f * color1[1] - 1.f;
+	float nz0 = std::sqrt(std::max(0.f, 1.f - nx0 * nx0 - ny0 * ny0));
+	float nz1 = std::sqrt(std::max(0.f, 1.f - nx1 * nx1 - ny1 * ny1));
+	float nx = blend(nx0, nx1, w0, w1);
+	float ny = blend(ny0, ny1, w0, w1);
+	float nz = blend(nz0, nz1, w0, w1);
+	float ns = std::sqrt(nx * nx + ny * ny + nz * nz);
+	nx /= ns;
+	ny /= ns;
+	nz /= ns;
+	normal[0] = nx;
+	normal[1] = ny;
+	normal[2] = blend(color0[2], color1[2], w0, w1);
+	normal[3] = blend(color0[3], color1[3], w0, w1);
+}
+
+static void sample_bilinear_vertical_normal(ImageReader *image, int x, int y, float yoffset, float output[4])
+{
+	float iy = floorf(yoffset);
+	float fy = yoffset - iy;
+	y += (int)iy;
+
+	float color00[4], color01[4];
+
+	image->getPixel(x + 0, y + 0, color00);
+	image->getPixel(x + 0, y + 1, color01);
+
+	blend_normal(color00, color01, 1.f - fy, fy, output);
+}
+
+static void sample_bilinear_horizontal_normal(ImageReader *image, int x, int y, float xoffset, float output[4])
+{
+	float ix = floorf(xoffset);
+	float fx = xoffset - ix;
+	x += (int)ix;
+
+	float color00[4], color10[4];
+
+	image->getPixel(x + 0, y + 0, color00);
+	image->getPixel(x + 1, y + 0, color10);
+
+	blend_normal(color00, color10, 1.f - fx, fx, output);
+}
+//SpeedEngine: Normal ASTC Optimize:[ubpazhuang]:[END]
 
 /*-----------------------------------------------------------------------------*/
 /* Internal Functions to Sample Blending Weights from AreaTex */
@@ -408,6 +492,103 @@ void PixelShader::getAreaColorEdgeDetection(int *xmin, int *xmax, int *ymin, int
 	*ymin -= 2;
 	*ymax += 1;
 }
+
+//SpeedEngine: Normal ASTC Optimize:[ubpazhuang]:[BEGIN]
+/**
+ * Normal Edge Detection
+ *
+ * IMPORTANT NOTICE: normal edge detection requires normalized normals.
+ */
+void PixelShader::normalEdgeDetection(int x, int y,
+				     ImageReader *normalImage,
+				     ImageReader *predicationImage,
+				     /* out */ float edges[4])
+{
+	float threshold[2];
+
+	/* Calculate the threshold: */
+	if (m_enable_predication && predicationImage)
+		calculatePredicatedThreshold(x, y, predicationImage, threshold);
+	else
+		threshold[0] = threshold[1] = m_threshold;
+
+	/* Calculate color deltas: */
+	float C[4], Cleft[4], Ctop[4];
+	normalImage->getPixel(x, y, C);
+	normalImage->getPixel(x - 1, y, Cleft);
+	normalImage->getPixel(x, y - 1, Ctop);
+	float Dleft = normal_delta(C, Cleft);
+	float Dtop  = normal_delta(C, Ctop);
+
+	/* We do the usual threshold: */
+	edges[0] = (x > 0 && Dleft >= threshold[0]) ? 1.0f : 0.0f;
+	edges[1] = (y > 0 && Dtop  >= threshold[1]) ? 1.0f : 0.0f;
+	edges[2] = 0.0f;
+	edges[3] = 1.0f;
+
+	/* Then discard if there is no edge: */
+	if (edges[0] == 0.0f && edges[1] == 0.0f)
+		return;
+
+	/* Calculate right and bottom deltas: */
+	float Cright[4], Cbottom[4];
+	normalImage->getPixel(x + 1, y, Cright);
+	normalImage->getPixel(x, y + 1, Cbottom);
+	float Dright  = normal_delta(C, Cright);
+	float Dbottom = normal_delta(C, Cbottom);
+
+	/* Calculate the maximum delta in the direct neighborhood: */
+	float maxDelta = fmaxf(fmaxf(Dleft, Dright), fmaxf(Dtop, Dbottom));
+
+	/* Get color used for both left and top edges: */
+	float Clefttop[4];
+	normalImage->getPixel(x - 1, y - 1, Clefttop);
+
+	/* Left edge */
+	if (edges[0] != 0.0f) {
+		/* Calculate deltas around the left pixel: */
+		float Cleftleft[4], Cleftbottom[4];
+		normalImage->getPixel(x - 2, y, Cleftleft);
+		normalImage->getPixel(x - 1, y + 1, Cleftbottom);
+		float Dleftleft   = normal_delta(Cleft, Cleftleft);
+		float Dlefttop    = normal_delta(Cleft, Clefttop);
+		float Dleftbottom = normal_delta(Cleft, Cleftbottom);
+
+		/* Calculate the final maximum delta: */
+		maxDelta = fmaxf(maxDelta, fmaxf(Dleftleft, fmaxf(Dlefttop, Dleftbottom)));
+
+		/* Local contrast adaptation: */
+		if (maxDelta > m_local_contrast_adaptation_factor * Dleft)
+			edges[0] = 0.0f;
+	}
+
+	/* Top edge */
+	if (edges[1] != 0.0f) {
+		/* Calculate deltas around the top pixel: */
+		float Ctoptop[4], Ctopright[4];
+		normalImage->getPixel(x, y - 2, Ctoptop);
+		normalImage->getPixel(x + 1, y - 1, Ctopright);
+		float Dtoptop   = normal_delta(Ctop, Ctoptop);
+		float Dtopleft  = normal_delta(Ctop, Clefttop);
+		float Dtopright = normal_delta(Ctop, Ctopright);
+
+		/* Calculate the final maximum delta: */
+		maxDelta = fmaxf(maxDelta, fmaxf(Dtoptop, fmaxf(Dtopleft, Dtopright)));
+
+		/* Local contrast adaptation: */
+		if (maxDelta > m_local_contrast_adaptation_factor * Dtop)
+			edges[1] = 0.0f;
+	}
+}
+
+void PixelShader::getAreaNormalEdgeDetection(int *xmin, int *xmax, int *ymin, int *ymax)
+{
+	*xmin -= 2;
+	*xmax += 1;
+	*ymin -= 2;
+	*ymax += 1;
+}
+//SpeedEngine: Normal ASTC Optimize:[ubpazhuang]:[END]
 
 /**
  * Depth Edge Detection
@@ -1086,6 +1267,57 @@ void PixelShader::neighborhoodBlending(int x, int y,
 		color[3] = sqrtf(5.0f * sqrtf(velocity_x * velocity_x + velocity_y * velocity_y));
 	}
 }
+
+//SpeedEngine: Normal ASTC Optimize:[ubpazhuang]:[BEGIN]
+void PixelShader::neighborhoodBlending_normal(int x, int y,
+				       ImageReader *normalImage,
+				       ImageReader *blendImage,
+				       /* out */ float color[4])
+{
+	float w[4];
+
+	/* Fetch the blending weights for current pixel: */
+	blendImage->getPixel(x, y, w);
+	float left = w[2], top = w[0];
+	blendImage->getPixel(x + 1, y , w);
+	float right = w[3];
+	blendImage->getPixel(x, y + 1, w);
+	float bottom = w[1];
+
+	/* Is there any blending weight with a value greater than 0.0? */
+	if (right + bottom + left + top < 1e-5) {
+		normalImage->getPixel(x, y, color);
+
+		return;
+	}
+
+	/* Calculate the blending offsets: */
+	void (*samplefunc)(ImageReader *image, int x, int y, float offset, float color[4]);
+	float offset1, offset2, weight1, weight2;
+
+	if (fmaxf(right, left) > fmaxf(bottom, top)) { /* max(horizontal) > max(vertical) */
+		samplefunc = sample_bilinear_horizontal_normal;
+		offset1 = right;
+		offset2 = -left;
+		weight1 = right / (right + left);
+		weight2 = left / (right + left);
+	}
+	else {
+		samplefunc = sample_bilinear_vertical_normal;
+		offset1 = bottom;
+		offset2 = -top;
+		weight1 = bottom / (bottom + top);
+		weight2 = top / (bottom + top);
+	}
+
+	/* We exploit bilinear filtering to mix current pixel with the chosen neighbor: */
+	float color1[4], color2[4];
+	samplefunc(normalImage, x, y, offset1, color1);
+	samplefunc(normalImage, x, y, offset2, color2);
+
+	blend_normal(color1, color2, weight1, weight2, color);
+}
+//SpeedEngine: Normal ASTC Optimize:[ubpazhuang]:[END]
 
 void PixelShader::getAreaNeighborhoodBlending(int *xmin, int *xmax, int *ymin, int *ymax)
 {

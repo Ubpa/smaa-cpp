@@ -28,6 +28,7 @@ static const int END_OF_LIST = -1;
 enum edge_detection {
 	ED_LUMA,
 	ED_COLOR,
+	ED_NORMAL, //SpeedEngine: Normal ASTC Optimize:[ubpazhuang]
 	ED_DEPTH,
 };
 
@@ -66,9 +67,10 @@ static const struct item color_types[6] = {
 	{END_OF_LIST, ""}
 };
 
-static const struct item edge_detection_types[4] = {
+static const struct item edge_detection_types[5] = {
 	{ED_LUMA,  "luma"},
 	{ED_COLOR, "color"},
+	{ED_NORMAL, "normal"}, //SpeedEngine: Normal ASTC Optimize:[ubpazhuang]
 	{ED_DEPTH, "depth"},
 	{END_OF_LIST, ""}
 };
@@ -401,6 +403,16 @@ static void process_file(int preset, int detection_type, float threshold, float 
 				}
 			}
 			break;
+		//SpeedEngine: Normal ASTC Optimize:[ubpazhuang]:[BEGIN]
+		case ED_NORMAL:
+			for (int y = 0; y < height; y++) {
+				for (int x = 0; x < width; x++) {
+					ps.normalEdgeDetection(x, y, orignImage, NULL, edges);
+					edgesImage->putPixel(x, y, edges);
+				}
+			}
+			break;
+		//SpeedEngine: Normal ASTC Optimize:[ubpazhuang]:[END]
 		case ED_DEPTH:
 			for (int y = 0; y < height; y++) {
 				for (int x = 0; x < width; x++) {
@@ -419,13 +431,25 @@ static void process_file(int preset, int detection_type, float threshold, float 
 		}
 	}
 
+	//SpeedEngine: Normal ASTC Optimize:[ubpazhuang]:[BEGIN]
 	/* 3. blend color with neighboring pixels */
-	for (int y = 0; y < height; y++) {
-		for (int x = 0; x < width; x++) {
-			ps.neighborhoodBlending(x, y, orignImage, blendImage, NULL, color);
-			finalImage->putPixel(x, y, color);
+	switch (detection_type) {
+	case ED_NORMAL:
+		for (int y = 0; y < height; y++) {
+			for (int x = 0; x < width; x++) {
+				ps.neighborhoodBlending_normal(x, y, orignImage, blendImage, color);
+				finalImage->putPixel(x, y, color);
+			}
+		}
+	default:
+		for (int y = 0; y < height; y++) {
+			for (int x = 0; x < width; x++) {
+				ps.neighborhoodBlending(x, y, orignImage, blendImage, NULL, color);
+				finalImage->putPixel(x, y, color);
+			}
 		}
 	}
+	//SpeedEngine: Normal ASTC Optimize:[ubpazhuang]:[END]
 
 	/* print elapsed time */
 	if (print_info) {
@@ -587,7 +611,7 @@ int main(int argc, char **argv)
 		fprintf(stderr, "Remove jaggies from PNG image and write antialiased PNG image.\n\n");
 		fprintf(stderr, "  -p PRESET     Specify base configuration preset\n");
 		fprintf(stderr, "                                                 [low|medium|high|ultra|extreme]\n");
-		fprintf(stderr, "  -e DETECTTYPE Specify edge detection type                   [luma|color|depth]\n");
+		fprintf(stderr, "  -e DETECTTYPE Specify edge detection type            [luma|color|normal|depth]\n"); //SpeedEngine: Normal ASTC Optimize:[ubpazhuang]
 		fprintf(stderr, "                (Depth edge detection uses alpha channel as depths)\n");
 		fprintf(stderr, "  -t THRESHOLD  Specify threshold of edge detection                   [0.0, 5.0]\n");
 		fprintf(stderr, "  -a FACTOR     Specify local contrast adaptation factor              [1.0, inf]\n");
